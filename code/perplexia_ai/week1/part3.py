@@ -131,6 +131,9 @@ Output:
 - If the question is ambiguous or the necessary arithmetic is unclear, extract the most direct arithmetic expression implied by the question. If in doubt, err on the side of calculator_required: true.
 - Your answer must follow the JSON format exactly.
 
+Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history.
+ User messages history is provided here: {messages_history}
+
 Reminder: Decide calculator necessity strictly on arithmetic complexity. If required, extract the needed arithmetic expression using only +, -, *, /, and parentheses—no calculation. Output only a JSON object in the specified structure—no explanations.
 
 **Remember:** The response must always be a valid JSON object as detailed above."""
@@ -138,37 +141,40 @@ Reminder: Decide calculator necessity strictly on arithmetic complexity. If requ
 QUERY_CLASSIFIER_SYSTEM_PROMPT = """Categorize an input question into exactly one of the following types by outputting only the single best-matching label. Read the input question, use the definitions and examples below to determine the most appropriate category, and respond strictly with the corresponding label—no explanation, justification, or extra text.
 
 Types:
-1. **Factual** – The question seeks a specific piece of information, data, or fact.
+1. **factual** – The question seeks a specific piece of information, data, or fact.
    - Example: "What is the capital of France?"
-2. **Analytical** – The question requires reasoning, interpretation, explanation, or analysis of causes, implications, or mechanisms.
+2. **analytical** – The question requires reasoning, interpretation, explanation, or analysis of causes, implications, or mechanisms.
    - Example: "Why did the Roman Empire fall?"
-3. **Comparison** – The question explicitly asks for similarities, differences, or evaluation between two or more entities, concepts, events, etc.
+3. **comparison** – The question explicitly asks for similarities, differences, or evaluation between two or more entities, concepts, events, etc.
    - Example: "How does renewable energy compare to fossil fuels?"
-4. **Definition** – The question asks for the meaning or explanation of a term or concept.
+4. **definition** – The question asks for the meaning or explanation of a term or concept.
    - Example: "What does 'quantum entanglement' mean?"
 
 # Output Format
 
-Respond with a single label only: Factual, Analytical, Comparison, or Definition. Do not include any reasoning, explanation, or other text.
+Respond with a single label only: factual, analytical, comparison, or definition. Do not include any reasoning, explanation, or other text.
 
 # Examples
 
 - Input: "What causes tides in the ocean?"
-  Output: Analytical
+  Output: analytical
 
 - Input: "What is the definition of inflation?"
-  Output: Definition
+  Output: definition
 
 - Input: "Which country has a larger population: India or China?"
-  Output: Comparison
+  Output: comparison
 
 - Input: "When did the Second World War end?"
-  Output: Factual
+  Output: factual
 
 # Notes
 
 - Read each question carefully and select the best-fitting label based on the definitions and examples above.
 - Respond only with the single category label—no additional text or explanation.
+
+Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history.
+ User messages history is provided here: {messages_history}
 """
 
 
@@ -217,26 +223,26 @@ class MemoryChat(ChatInterface):
         self.llm = init_chat_model("gpt-4o-mini", model_provider="openai")
         self.query_classifier_prompt = ChatPromptTemplate.from_messages([
             ("system", QUERY_CLASSIFIER_SYSTEM_PROMPT),
-            ("user", "{query}"),
-            MessagesPlaceholder(variable_name="messages_history")])
+            MessagesPlaceholder(variable_name="messages_history"),
+            ("user", "{query}")])
         self.response_prompts = {
             "factual_node": ChatPromptTemplate.from_messages(
-                [("system", "answers should be concise and direct"), ("user", "{query}"),
-                MessagesPlaceholder(variable_name="messages_history")]
+                [("system", "answers should be concise and direct. Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history. User messages history is provided here: {messages_history}"),
+                ("user", "{query}")]
             ),
             "analytical_node": ChatPromptTemplate.from_messages(
-                [("system", "responses should include reasoning steps"), ("user", "{query}"),
-                MessagesPlaceholder(variable_name="messages_history")]
+                [("system", "responses should include reasoning steps. Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history. User messages history is provided here: {messages_history}"),
+                ("user", "{query}")]
             ),
             "comparison_node": ChatPromptTemplate.from_messages(
                 [
-                    ("system", "should use structured formats (tables, bullet points)"),
+                    ("system", "should use structured formats (tables, bullet points). Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history. User messages history is provided here: {messages_history}"),
                     ("user", "{query}"),
-                    MessagesPlaceholder(variable_name="messages_history")
                 ]
             ),
             "definition_node": ChatPromptTemplate.from_messages(
-                [("system", "should include examples and use cases"), ("user", "{query}"), MessagesPlaceholder(variable_name="messages_history")]
+                [("system", "should include examples and use cases. Use information from messages history only if it's relevant to the prompt. Otherwise, ignore the messages history. User messages history is provided here: {messages_history}"),
+                ("user", "{query}")]
             ),
         }
         self.query_types = ["factual", "analytical", "comparison", "definition"]
