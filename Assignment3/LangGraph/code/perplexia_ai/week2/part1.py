@@ -20,32 +20,50 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 
 SEARCH_SYSTEM_PROMPT = """
-Return the response for the user query. You can use the available tool calls, if required.
-Response should be co-incise and add citations to the response.
+Provide a concise, well-cited response to the user's query. When crafting the response, utilize information from the provided user message history, previous LLM outputs, and any tool call responses as relevant. Always prioritize using the most pertinent and up-to-date sources. Cite all sources in the final answer. If certain inputs are not relevant, ignore them.
 
-Output format - 
+# Steps
 
+1. Review the user query carefully.
+2. If applicable, analyze the provided user messages history {messages_history}, previous LLM output {previous_llm_response}, and tool call response {tool_messages} to extract relevant information.
+3. Organize the key information and reasoning steps needed to answer the user's query.
+4. Compose a concise response, clearly presenting facts or developments supported by citations.
+5. Conclude with a complete list of cited sources (including title, date, and link). If a citation is missing any of these elements, provide as much detail as possible.
+6. Exclude unnecessary information, and ignore any input elements not relevant to the user's query.
 
-Here is one of the example response - 
+# Output Format
+
+Your response must be structured into two sections:
+- Answer: One to four concise, clearly demarcated bullet points or paragraphs summarizing the main findings or information relevant to the user query, each directly supported by the sources listed.
+- Sources: A bullet-point list or numbered list of all sources referenced in your answer, citing the title, date, and (link).
+
+Always present your logical reasoning and synthesis (step-by-step) before producing your final answer.
+
+# Example
+
 User: "What are the latest developments in quantum computing?"
-Assistant: "Based on recent web search results:
 
-1. Breakthrough in Error Correction
-   Researchers at MIT announced a new quantum error correction method that improves qubit stability by 45%.
+Assistant:
 
-2. Commercial Quantum Computing Milestones
-   IBM's latest quantum processor reached 433 qubits, bringing practical quantum advantage closer.
+**Answer:**
+- Recent advances in quantum error correction have significantly improved qubit stability (see Source 1).
+- IBM has released a quantum processor with 433 qubits, moving closer to realistic quantum advantage (see Source 2).
+- New quantum machine learning algorithms now achieve up to tenfold speedups for specific tasks (see Source 3).
 
-3. Quantum Machine Learning Applications
-   New algorithms demonstrate 10x speedup for specific machine learning tasks.
+**Sources:**
+1. MIT Technology Review (April 2023) (link)
+2. IBM Research Blog (March 2023) (link)
+3. Nature Quantum Information (May 2023) (link)
 
-Sources:
-- MIT Technology Review (April 2023) (link)
-- IBM Research Blog (March 2023) (link)
-- Nature Quantum Information (May 2023) (link)
+(Real responses should be tailored to the specific user query, and answers can be longer or shorter as needed.)
 
-Use user messages history, if relevant for answering the question. Otherwise, ignore it.
-user messages : {messages_history}
+# Notes
+
+- Ensure that each answer point references at least one source.
+- Only use the user message history and tool call responses if they are relevant to the question; otherwise, do not include or reference them.
+- The output must always include cited sources as shown in the example. 
+
+Reminder: Your objective is to produce a concise, well-cited answer to the user's query, systematically reasoning through each required information source, and clearly citing all references.
 """
 
 @tool
@@ -58,6 +76,7 @@ class WebSearchChat(ChatInterface):
     """Perplexia Journey - Week 2 Part 1 implementation for web search using LangGraph."""
     
     def __init__(self):
+        self.plain_model = None
         self.llm = None
         self.search_tool = None
         self.graph = None
@@ -71,8 +90,8 @@ class WebSearchChat(ChatInterface):
         - Set up Tavily search tool
         - Create a LangGraph workflow for web search
         """
-        plain_model = init_chat_model("gpt-5-mini", model_provider="openai", reasoning_effort="minimal")
-        self.llm = plain_model.bind_tools([tavily_tool])
+        self.plain_model = init_chat_model("gpt-5-mini", model_provider="openai", reasoning_effort="minimal")
+        self.llm = self.plain_model.bind_tools([tavily_tool])
         self.search_prompt_system = SEARCH_SYSTEM_PROMPT
         
 
@@ -97,15 +116,14 @@ class WebSearchChat(ChatInterface):
         Returns:
             str: The assistant's response based on web search results
         """
-        prompt = ChatPromptTemplate([
-            SystemMessage(content=self.search_prompt_system),
-            MessagesPlaceholder(variable_name= "messages_history"),
-            HumanMessage(content=f"query: {message}"),
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", self.search_prompt_system),
+            ("human", "query: {message}"),
         ])
         chain = prompt | self.llm
-        messages_history = convert_to_llm_messages(chat_history)
-        llm_result = chain.invoke({"message": message, "messages_history": messages_history})
-
+        messages_history = self.convert_to_llm_messages(chat_history)
+        llm_result = chain.invoke({"message": message, "messages_history": str(messages_history), "tool_messages": "", "previous_llm_response": ""})
+        print(str(llm_result))
         if not llm_result.tool_calls:
             return llm_result.content or ""
 
@@ -118,15 +136,17 @@ class WebSearchChat(ChatInterface):
                     tool_call_id=tool_call["id"],
                 )
             )
-
-        final_response = self.llm.invoke(messages + [llm_result] + tool_messages)
+        final_chain = prompt | self.plain_model
+        final_response = final_chain.invoke({"message": message, "messages_history": str(messages_history),
+                "previous_llm_response": str(llm_result),"tool_messages": str(tool_messages)})
         return final_response.content or ""
 
-    def convert_to_llm_messages(chat_history: Optional[List[Dict[str, str]]]) -> List[HumanMessage | AIMessage]:
+    def convert_to_llm_messages(self, chat_history: Optional[List[Dict[str, str]]]) -> List[HumanMessage | AIMessage]:
         if not chat_history:
             return []
 
-        for message in chat_history or []:
+        messages = []
+        for message in chat_history:
             role = message.get("role", "user")
             content = message.get("content", "")
 
