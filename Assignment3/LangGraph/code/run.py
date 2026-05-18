@@ -1,0 +1,24 @@
+import os
+import sys
+import argparse
+
+# Add the project root to Python path
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(project_root)
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Run Perplexia AI Assistant')
+parser.add_argument('--week', type=int, choices=[1, 2], default=1,
+                    help='Which week to run (1 or 2)')
+parser.add_argument('--mode', type=str, choices=['part1', 'part2', 'part3'], 
+                    default='part1', help='Which part of the selected week to run')
+parser.add_argument('--solution', '--solutions', dest='solution', action='store_true',
+                    help='Run solution code instead of student code')
+args = parser.parse_args()
+
+# Import and run the app
+from perplexia_ai.app import APP_THEME, create_demo
+
+if __name__ == "__main__":
+    demo = create_demo(week=args.week, mode_str=args.mode, use_solution=args.solution)
+    demo.launch(theme=APP_THEME)
