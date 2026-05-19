@@ -183,6 +183,13 @@ from typing import Dict, List, Optional
 from perplexia_ai.core.chat_interface import ChatInterface
 from perplexia_ai.tools.calculator import Calculator
 
+class Node(TypedDict):
+    calculator_usage_required: str
+    math_expression: str
+    query: str
+    query_type: str
+    output: str
+    messages_history: str
 
 def _to_langchain_messages(
     chat_history: Optional[List[Dict[str, str]]],
@@ -223,7 +230,6 @@ class MemoryChat(ChatInterface):
         self.llm = init_chat_model("gpt-4o-mini", model_provider="openai")
         self.query_classifier_prompt = ChatPromptTemplate.from_messages([
             ("system", QUERY_CLASSIFIER_SYSTEM_PROMPT),
-            MessagesPlaceholder(variable_name="messages_history"),
             ("user", "{query}")])
         self.response_prompts = {
             "factual_node": ChatPromptTemplate.from_messages(
@@ -257,7 +263,48 @@ class MemoryChat(ChatInterface):
         LangChainInstrumentor(tracer_provider=tracer_provider).instrument()
 
         print(f"Instrumentation active. Sending traces to Arize Cloud Project")
+    
+    def run_prompt(self, prompt: ChatPromptTemplate, query: str, messages_history_v2: str) -> str:
+        chain = prompt | self.llm | PARSER
+        return chain.invoke(
+            {"query": query, "messages_history": messages_history_v2}
+        ).strip()
 
+    def classifier_node(self, state: Node) -> Node:
+        query_type = self.run_prompt(self.query_classifier_prompt, state["query"], state["messages_history"]).lower()
+        return {"query_type": query_type}
+
+    def response_node_factory(self, prompt_key: str):
+        def _response_node(state: Node) -> Node:
+            return {"output": self.run_prompt(self.response_prompts[prompt_key], state["query"], state["messages_history"])}
+
+        return _response_node
+
+    def calculator_tool_call_node(self, state: Node) -> Node:
+        expression = state.get("math_expression", "")
+        result = self.calculator.evaluate_expression(expression)
+        return {"output": str(result)}
+
+    def calculator_tool_call_required(self, state: Node) -> Node:
+        messages = [
+            SystemMessage(content=CALCUATOR_TOOL_USAGE_REQUIRED_PROMPT),
+            HumanMessage(content=state["query"])
+        ]
+        result = PARSER.invoke(self.llm.invoke(messages)).strip()
+        # Strip markdown code fences if present
+        if result.startswith("```"):
+            result = result.split("```")[1]
+            if result.startswith("json"):
+                result = result[4:]
+            result = result.strip()
+        try:
+            data = json.loads(result)
+            required = "REQUIRED" if data.get("calculator_required") else "NOT_REQUIRED"
+            expression = data.get("expression", "")
+        except Exception:
+            required = "NOT_REQUIRED"
+            expression = ""
+        return {"calculator_usage_required": required, "math_expression": expression}
     
     def process_message(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Process a message with memory and tools.
@@ -275,65 +322,18 @@ class MemoryChat(ChatInterface):
         Returns:
             str: The assistant's response
         """
-        class Node(TypedDict, total=False):
-            calculator_usage_required: str
-            math_expression: str
-            query_type: str
-            output: str
+
 
         history_messages = _to_langchain_messages(chat_history)
-
-        def run_prompt(prompt: ChatPromptTemplate) -> str:
-            chain = prompt | self.llm | PARSER
-            return chain.invoke(
-                {"query": message, "messages_history": history_messages}
-            ).strip()
-
-        def classifier_node(state: Node) -> Node:
-            query_type = run_prompt(self.query_classifier_prompt).lower()
-            return {"query_type": query_type}
-
-        def response_node_factory(prompt_key: str):
-            def _response_node(state: Node) -> Node:
-                return {"output": run_prompt(self.response_prompts[prompt_key])}
-
-            return _response_node
-
-        def calculator_tool_call_node(state: Node) -> Node:
-            expression = state.get("math_expression", "")
-            result = self.calculator.evaluate_expression(expression)
-            return {"output": str(result)}
-
-        def calculator_tool_call_required(state: Node) -> Node:
-            messages = [
-                SystemMessage(content=CALCUATOR_TOOL_USAGE_REQUIRED_PROMPT),
-                HumanMessage(content=message)
-            ]
-            result = PARSER.invoke(self.llm.invoke(messages)).strip()
-            # Strip markdown code fences if present
-            if result.startswith("```"):
-                result = result.split("```")[1]
-                if result.startswith("json"):
-                    result = result[4:]
-                result = result.strip()
-            try:
-                data = json.loads(result)
-                required = "REQUIRED" if data.get("calculator_required") else "NOT_REQUIRED"
-                expression = data.get("expression", "")
-            except Exception:
-                required = "NOT_REQUIRED"
-                expression = ""
-            return {"calculator_usage_required": required, "math_expression": expression}
-
         builder = StateGraph(Node)
 
-        builder.add_node("classifier", classifier_node)
-        builder.add_node("factual_node", response_node_factory("factual_node"))
-        builder.add_node("analytical_node", response_node_factory("analytical_node"))
-        builder.add_node("comparison_node", response_node_factory("comparison_node"))
-        builder.add_node("definition_node", response_node_factory("definition_node"))
-        builder.add_node("calculator_tool_call_node", calculator_tool_call_node)
-        builder.add_node("calculator_tool_call_required", calculator_tool_call_required)
+        builder.add_node("classifier", self.classifier_node)
+        builder.add_node("factual_node", self.response_node_factory("factual_node"))
+        builder.add_node("analytical_node", self.response_node_factory("analytical_node"))
+        builder.add_node("comparison_node", self.response_node_factory("comparison_node"))
+        builder.add_node("definition_node", self.response_node_factory("definition_node"))
+        builder.add_node("calculator_tool_call_node", self.calculator_tool_call_node)
+        builder.add_node("calculator_tool_call_required",self.calculator_tool_call_required)
         builder.add_edge(START, "calculator_tool_call_required")
         builder.add_conditional_edges("calculator_tool_call_required", 
             lambda state: state["calculator_usage_required"] if state["calculator_usage_required"] in [
@@ -361,6 +361,6 @@ class MemoryChat(ChatInterface):
 
         graph = builder.compile()
 
-        result = graph.invoke({})
+        result = graph.invoke({"query": message,"messages_history": str(history_messages)})
 
         return result.get("output", "")
