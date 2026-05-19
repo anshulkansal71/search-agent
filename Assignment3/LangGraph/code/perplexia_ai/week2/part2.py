@@ -9,6 +9,32 @@ This implementation focuses on:
 
 from typing import Dict, List, Optional
 from perplexia_ai.core.chat_interface import ChatInterface
+from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain.chat_models import init_chat_model
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langgraph.graph import START, END, StateGraph
+from pydantic import BaseModel, Field
+from langchain_core.prompts import ChatPromptTemplate
+
+import os
+
+PROMPT = """
+For the given user query: {user_query} please provide an answer.
+Documents content is present here: {doc_content}
+Answer should be basis on the documents content provided. 
+If answer is not present in content, don't answer that.
+Output format:
+is_answer_present: bool(true/false)
+answer: string
+"""
+
+#  Previous interactions with users are provided here: {user_history}
+
+class RagResult(BaseModel):
+    is_answer_present: bool = Field(description="Return true or false depending on whether relevant context is present in prompt to answer the question.")
+    query_response: str = Field(description="Response of the query if is_answer_present is true. Otherwise, leave it blank")
+
 
 
 class DocumentRAGChat(ChatInterface):
@@ -31,6 +57,30 @@ class DocumentRAGChat(ChatInterface):
         - Build retrieval system
         - Create LangGraph for RAG workflow
         """
+        model = init_chat_model("gpt-5-mini", model_provider="openai", reasoning_effort="minimal")
+        self.llm = model.with_structured_output(RagResult)
+        # Resolve docs relative to this file, not cwd (run.py is often started from repo root)
+        directory_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "docs")
+        )
+        if not os.path.isdir(directory_path):
+            raise FileNotFoundError(f"PDF docs directory not found: {directory_path}")
+        loader = PyPDFDirectoryLoader(directory_path)
+        pages = loader.load()
+        print("Number of pages: " , len(pages))
+
+        embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+
+        self.vector_store = Chroma(
+            embedding_function=embeddings,
+            persist_directory="./chroma_db",
+            collection_name="opm_documents_1"
+        )
+        # Add the chunks (pages) from the PDF to the vector store
+        self.vector_store.add_documents(pages)
+
+
+
         pass
     
     def process_message(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
@@ -45,5 +95,18 @@ class DocumentRAGChat(ChatInterface):
         Returns:
             str: The assistant's response based on document knowledge
         """
-        return "Not implemented yet. Please implement Perplexia Journey - Week 2 Part 2: Document RAG with LangGraph."
+        # convert_to_llm_messages(chat_history)
 
+        docs = self.vector_store.similarity_search(message, k=5)
+        chatPromptTemplate = ChatPromptTemplate.from_template(PROMPT)
+
+        chain = chatPromptTemplate | self.llm
+        response = chain.invoke({"user_query": message, "doc_content": str(docs)})
+        if not response.is_answer_present:
+            return "Sorry, we don't have enough information related to this question"
+        return response.query_response
+
+    # def convert_to_llm_messages(self, chat_history: Optional[List[Dict[str, str]]]): [] {
+    #     if chat_history = None:
+    #         return 
+    # }
