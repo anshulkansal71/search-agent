@@ -1,0 +1,10 @@
+run_id,model,prompt_version,accuracy,factuality,latency_p95_ms,cost_per_1k_usd
+r101,gpt-4o-mini,prompt_v5,0.824,0.903,1180,0.082
+r102,gpt-4o-mini,prompt_v6,0.831,0.898,1040,0.079
+r103,gpt-4.1-mini,prompt_v6,0.845,0.912,1460,0.112
+r104,gpt-4.1-mini,prompt_v7,0.838,0.907,1260,0.094
+r105,gpt-5-mini,prompt_v2,0.852,0.918,1700,0.145
+r106,gpt-4o-mini,prompt_v7,0.829,0.905,990,0.086
+r107,gpt-4o-mini,prompt_v8,0.833,0.910,1110,0.091
+r108,gpt-4.1-mini,prompt_v5,0.836,0.913,1320,0.099
+r109,gpt-4o-mini,prompt_v9,0.821,0.901,930,0.080
