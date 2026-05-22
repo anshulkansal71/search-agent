@@ -7,7 +7,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import START, END, StateGraph
 from dotenv import load_dotenv
-from .prompts import RESEARCH_REPORT_FORMAT_GENERATION_PROMPT, SECTION_INVESTIGATION_PROMPT
+from .prompts import RESEARCH_REPORT_FORMAT_GENERATION_PROMPT, SECTION_INVESTIGATION_PROMPT, FINALIZER_PROMPT
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from arize.otel import register
@@ -34,6 +34,7 @@ class ResearchNode(TypedDict):
     research_topic: str
     research_sections: list[ResearchSection]
     research_section_investigations: list[ResearchSectionInvestigation]
+    final_report: str
 
 class ResearchAnalysis(BaseModel):
     section_analysis: str = Field(description = "Analysis of the section.")
@@ -73,14 +74,16 @@ class DeepResearchChat(ChatInterface):
         builder = StateGraph(ResearchNode)
         builder.add_node("research_manager_agent", self.reasearch_manager_agent)
         builder.add_node("specialised_research_agents", self.specialised_research_agents)
+        builder.add_node("finalizer_agent", self.finalizer_agent)
 
         builder.add_edge(START, "research_manager_agent")
         builder.add_edge("research_manager_agent", "specialised_research_agents")
-        builder.add_edge("specialised_research_agents", END)
+        builder.add_edge("specialised_research_agents", "finalizer_agent")
+        builder.add_edge("finalizer_agent", END)
         
         self.graph = builder.compile()
 
-    def _create_tools(self) -> str:
+    def _create_tools(self) -> list:
         @tool
         def tavily_tool(query: str) -> str:
             """Call this tool for searching any query"""
@@ -98,7 +101,7 @@ class DeepResearchChat(ChatInterface):
         result = agent.invoke({"messages": [HumanMessage(state["research_topic"])]})
 
         return {"research_sections": result["structured_response"].research_sections}
-
+    
     async def specialised_research_agents(self, state: ResearchNode) -> ResearchNode :
         research_sections = state["research_sections"]
         research_section_investigations : List[ResearchSectionInvestigation] = []
@@ -131,20 +134,21 @@ class DeepResearchChat(ChatInterface):
             "section_analysis": curr_analysis.section_analysis,
             "sources": curr_analysis.sources,
         }
+
+    def finalizer_agent(self, state: ResearchNode) -> ResearchNode:
+        prompt = ChatPromptTemplate([
+            ("user", FINALIZER_PROMPT)
+        ])
+        parser = StrOutputParser()
+        chain = prompt | self.llm | parser
+        final_report = chain.invoke({"research_topic": state["research_topic"], "sections_summary": state["research_section_investigations"]})
+        return {"final_report": final_report }
+
     
 
     def process_message(
         self, message: str, chat_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """Process a message using the deep research workflow."""
-        investigations = asyncio.run(self.graph.ainvoke({"research_topic": message}))["research_section_investigations"]
-        parts = []
-        for inv in investigations:
-            sources = "\n".join(f"- {s}" for s in inv.get("sources", []))
-            parts.append(
-                f"## {inv['section_name']}\n\n"
-                f"**Overview:** {inv['brief_overview']}\n\n"
-                f"{inv['section_analysis']}\n\n"
-                f"**Sources:**\n{sources}"
-            )
-        return "\n\n---\n\n".join(parts)
+        final_report = asyncio.run(self.graph.ainvoke({"research_topic": message}))["final_report"]
+        return final_report
