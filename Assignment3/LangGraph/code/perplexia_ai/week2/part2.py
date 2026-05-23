@@ -16,6 +16,7 @@ from langchain_openai import OpenAIEmbeddings
 from langgraph.graph import START, END, StateGraph
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, HumanMessage
 
 import os
 
@@ -24,12 +25,29 @@ For the given user query: {user_query} please provide an answer.
 Documents content is present here: {doc_content}
 Answer should be basis on the documents content provided. 
 If answer is not present in content, don't answer that.
+Please refer previous interactions if relevant. Otherwise, ignore it.
+Previous interactions are provided here: {messages_history}
+
 Output format:
 is_answer_present: bool(true/false)
 answer: string
 """
 
 #  Previous interactions with users are provided here: {user_history}
+
+
+def to_langchain_messages(chat_history: Optional[List[Dict[str, str]]]) -> List[HumanMessage | AIMessage]:
+    if not chat_history:
+        return []
+    messages: List[HumanMessage | AIMessage] = []
+    for message in chat_history:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if role == "assistant":
+            messages.append(AIMessage(content))
+        else:
+            messages.append(HumanMessage(content))
+    return messages
 
 class RagResult(BaseModel):
     is_answer_present: bool = Field(description="Return true or false depending on whether relevant context is present in prompt to answer the question.")
@@ -78,10 +96,6 @@ class DocumentRAGChat(ChatInterface):
         )
         # Add the chunks (pages) from the PDF to the vector store
         self.vector_store.add_documents(pages)
-
-
-
-        pass
     
     def process_message(self, message: str, chat_history: Optional[List[Dict[str, str]]] = None) -> str:
         """Process a message using document RAG.
@@ -95,18 +109,13 @@ class DocumentRAGChat(ChatInterface):
         Returns:
             str: The assistant's response based on document knowledge
         """
-        # convert_to_llm_messages(chat_history)
+        messages_history = to_langchain_messages(chat_history)
 
         docs = self.vector_store.similarity_search(message, k=5)
         chatPromptTemplate = ChatPromptTemplate.from_template(PROMPT)
 
         chain = chatPromptTemplate | self.llm
-        response = chain.invoke({"user_query": message, "doc_content": str(docs)})
+        response = chain.invoke({"user_query": message, "doc_content": str(docs), "messages_history": str(messages_history)})
         if not response.is_answer_present:
             return "Sorry, we don't have enough information related to this question"
         return response.query_response
-
-    # def convert_to_llm_messages(self, chat_history: Optional[List[Dict[str, str]]]): [] {
-    #     if chat_history = None:
-    #         return 
-    # }
