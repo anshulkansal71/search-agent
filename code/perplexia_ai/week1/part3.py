@@ -310,7 +310,7 @@ class MemoryChat(ChatInterface):
         """Process a message with memory and tools.
         
         Students should:
-        - Use chat history for context
+        - Use chat history for context/
         - Handle follow-up questions
         - Use calculator when needed
         - Format responses appropriately
